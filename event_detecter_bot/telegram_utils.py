@@ -175,23 +175,31 @@ def scape_telegram_chars(str_input):
                     .replace('=', '\=').replace('|', '\|').replace('{', '\{').replace('}', '\}')\
                     .replace('.', '\.').replace('!', '\!').encode('utf-8','ignore').decode('utf-8') #.replace('`', '\`')\
 
-def format_as_event_message(data_dict):
-    def format_time(input_datetime_str, include_date=False):
-        try:
-            input_datetime = datetime.fromisoformat(
-                input_datetime_str.replace('Z','').split('.')[0]+".000000+00:00"
-                #                           so a datetime object is obtained ^^
-                #                           with tzinfo=datetime.timezone.utc
-            )
-        except ValueError:
-            print("!! bad date string format:",input_datetime_str)
-            return input_datetime_str
-        if include_date:
-            return datetime.strftime(input_datetime,'%d%b %H:%M:%S UTC')
-        else:
-            return datetime.strftime(input_datetime.astimezone(timezone('Europe/Madrid')),'%H:%M')
-            #                                   so it will be printed as local time ^^
+def format_time(input_datetime_str, include_date=False, return_in_utc=False):
+    try:
+        input_datetime = datetime.fromisoformat(
+            input_datetime_str.replace('Z','').split('.')[0]+".000000+00:00"
+            #                           so a datetime object is obtained ^^
+            #                           with tzinfo=datetime.timezone.utc
+        )
+    except ValueError:
+        print("!! bad date string format:",input_datetime_str)
+        return input_datetime_str
 
+    if not return_in_utc:
+        input_datetime = input_datetime.astimezone(timezone('Europe/Madrid'))
+
+    if include_date:
+        result = datetime.strftime(input_datetime,'%d%b %H:%M:%S')
+    else:
+        result = datetime.strftime(input_datetime,'%H:%M')
+
+    if return_in_utc:
+        return result + " UTC"
+    else:
+        return result
+
+def format_as_event_message(data_dict):
     def format_duration(input_duration):
         return str(timedelta(seconds=int(input_duration))).replace(':',"h",1).replace(':',"'",1)+'"'
 

@@ -48,10 +48,10 @@ def identify_organization_network(localip_str):
     for netw_name, netw in networks.items():
         if is_in_address_ranges(local_ip, netw['cidr_address_ranges']):
                 return netw_name
-    for network_list in network_lists: # iterate through MISSM network inventaries
+    for network_list in network_lists: # iterate through network inventaries
         for line in network_list:
             if localip_str in line:
-                return line[0] #example: "MISSM - María de Guzmán, 25"
+                return line[0]
 
     return False
 

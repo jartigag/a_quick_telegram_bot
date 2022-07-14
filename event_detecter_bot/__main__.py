@@ -25,11 +25,14 @@
 # $ sudo systemctl daemon-reload
 
 __author__  = "@jartigag"
-__version__ = '1.7'
-__date__    = '2022-03-17'
+__version__ = '1.8'
+__date__    = '2022-07-13'
 
 __changelog__ = """
+v1.8:
+      - Optional config: LAST_N_EVENTS=0, WAVING_HOURS
 v1.7:
+      - New mode: ON_CALL
       - User and admin authentication
       - Telegram commands: /restart, /status, /whois
       - Change UTC by Europe/Madrid timezone
@@ -112,8 +115,21 @@ def update_events():
                     print("[-]",event[event_id],"doesn't meet the filtering condition:", flush=True)
                     print("   "+"\n   ".join(filtering_condition_code.split('\n')), flush=True)
 
-    sent_events_file.close()
-    print("-", flush=True)
+                unassigned_event = False
+                if 'status' in event_with_extracted_fields.keys():
+                    if event_with_extracted_fields['status']=="new":
+                        unassigned_event = True
+                if 'state' in event_with_extracted_fields.keys():
+                    if event_with_extracted_fields['state']=="open":
+                        unassigned_event = True
+                if ON_CALL and unassigned_event:
+                    print(f"[+] ON_CALL={ON_CALL}, so",event[event_id],"will be re-sent until status!='new' (that is, until auto-assigned)", flush=True)
+                if ON_CALL and unassigned_event==False:
+                    json.dump(event, sent_events_file)
+                    sent_events_file.write('\n')
+                if not ON_CALL:
+                    json.dump(event, sent_events_file)
+                    sent_events_file.write('\n')
 
 def run_scheduler():
     already_waved_today = False
@@ -127,7 +143,7 @@ def run_scheduler():
     schedule.every(SCHEDULE_DELAY_SECS).seconds.do(update_events)
     schedule.run_all() # for the first time, run right now
     while True:
-        if is_time_between(dt.time(10,0), dt.time(10,15)): # (!): UTC time
+        if any( is_time_between(dt.time(H,0), dt.time(H,2)) for H in WAVING_HOURS ): # (!): UTC time
             if not already_waved_today:
                 print("[+] T1: \N{waving hand sign}", flush=True)
                 if send_to_bot:
@@ -138,15 +154,16 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(5)
 
-def msg_meets_filtering_conditions(msg):
+def msg_meets_filtering_conditions(msg, FILTERING_CONDITIONS):
     for i,x in enumerate(FILTERING_CONDITIONS):
         # convert emojis, if any:
         if "\\N" in x:
                 FILTERING_CONDITIONS[i] = unicodedata.lookup( x.replace('\\N','').replace('{','').replace('}','') )
-    for condition in FILTERING_CONDITIONS:
-        if scape_telegram_chars(condition) not in msg:
-            return False
-    return True
+    for or_condition in FILTERING_CONDITIONS: #example: [ ['MiRedLocal', '\N{large red square}'],['MiTag'] ]
+        if all(scape_telegram_chars(and_condition) in msg for and_condition in or_condition):
+            #example:               ^^^ 'MiRedLocal'                           ^^^ ['MiRedLocal', '\N{large red square}']
+                return True
+    return False
 
 if __name__ == "__main__":
 
@@ -155,7 +172,7 @@ if __name__ == "__main__":
     config.read('config_event_detecter.ini')
 
     bot_header  = "@event_detecter_bot"
-    crwd_header = "Service API Keys"
+    api_header  = "Service API Keys"
     tg_header   = "Telegram API Token"
 
     # feature flags (for debugging):
@@ -165,7 +182,9 @@ if __name__ == "__main__":
 
     FILTERING_CONDITIONS     =     config.get(bot_header, 'FILTERING_CONDITIONS').split(',')
     LAST_N_EVENTS            = int(config.get(bot_header, 'LAST_N_EVENTS'))
+    ON_CALL                  =     config.getboolean(bot_header, 'ON_CALL')
     SCHEDULE_DELAY_SECS      = int(config.get(bot_header, 'SCHEDULE_DELAY_SECS'))
+    WAVING_HOURS             = [int(x) for x in config.get(bot_header, 'WAVING_HOURS', fallback="7").split(',')]
     SENT_EVENTS_FILENAME     =     config.get(bot_header, 'SENT_EVENTS_FILE')
     SYSTEMCTL_SERVICE_NAME   =     config.get(bot_header, 'SYSTEMCTL_SERVICE_NAME')
     open(SENT_EVENTS_FILENAME,'a+').close() # touch file (create the file if it doesn't exist, leave it if it exists)
@@ -173,10 +192,11 @@ if __name__ == "__main__":
     print(f"FILTERING_CONDITIONS={FILTERING_CONDITIONS}, SYSTEMCTL_SERVICE_NAME={SYSTEMCTL_SERVICE_NAME}", flush=True)
     print(f"SCHEDULE_DELAY_SECS={SCHEDULE_DELAY_SECS}, LAST_N_EVENTS={LAST_N_EVENTS}", flush=True)
 
+
     if send_to_bot:
         TOKEN                  = config.get(tg_header,   'TOKEN')
         CHAT_ID                = config.get(tg_header,   'CHAT_ID')
-        telegram_config_params = {'TOKEN': TOKEN, 'FILTERING_CONDITIONS': FILTERING_CONDITIONS}
+        telegram_config_params = {'TOKEN': TOKEN, 'FILTERING_CONDITIONS': FILTERING_CONDITIONS, 'ON_CALL': ON_CALL}
 
         process_params = {'VERSION': __version__, 'DATE': __date__, 'CHANGELOG': __changelog__, 'AUTHOR': __author__,
                           'SYSTEMCTL_SERVICE_NAME': SYSTEMCTL_SERVICE_NAME, 'SCHEDULE_DELAY_SECS': SCHEDULE_DELAY_SECS, 'LAST_N_EVENTS': LAST_N_EVENTS}
