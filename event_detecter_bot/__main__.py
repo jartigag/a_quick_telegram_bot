@@ -41,7 +41,7 @@ v1.7:
       - Telegram commands: /restart, /status, /whois
       - Change UTC by Europe/Madrid timezone
 v1.6:
-      - Improve telefalcon.network_utils.identify_organization_network():
+      - Improve event_detecter_bot.network_utils.identify_organization_network():
         filter by known hosts (network_lists/*csv)
       - Filter telegram messages with msg_meets_filtering_conditions(),
         for example: MiRedLocal,\N{large red square}
