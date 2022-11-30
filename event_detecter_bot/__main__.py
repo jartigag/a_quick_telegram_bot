@@ -25,12 +25,16 @@
 # $ sudo systemctl daemon-reload
 
 __author__  = "@jartigag"
-__version__ = '1.8'
-__date__    = '2022-07-13'
+__version__ = '1.9'
+__date__    = '2022-08-30'
 
 __changelog__ = """
+v1.9:
+      - Fix msg_meets_filtering_conditions() bug
+      - Add tests
 v1.8:
       - Optional config: LAST_N_EVENTS=0, WAVING_HOURS
+      - Unit tests
 v1.7:
       - New mode: ON_CALL
       - User and admin authentication
@@ -156,14 +160,28 @@ def run_scheduler():
 
 def msg_meets_filtering_conditions(msg, FILTERING_CONDITIONS):
     for i,x in enumerate(FILTERING_CONDITIONS):
+        x = "".join(x) # fix for cases with one only condition like FILTERING_CONDITIONS=[["\N{large red square}"]]
         # convert emojis, if any:
-        if "\\N" in x:
-                FILTERING_CONDITIONS[i] = unicodedata.lookup( x.replace('\\N','').replace('{','').replace('}','') )
+        if len(FILTERING_CONDITIONS[i])>1:
+            for j,y in enumerate(FILTERING_CONDITIONS[i]):
+                if "\\N" in y:
+                        FILTERING_CONDITIONS[i][j] = unicodedata.lookup( y.replace('\\N','').replace('{','').replace('}','') )
+        else:
+            if "\\N" in x:
+                    FILTERING_CONDITIONS[i] = unicodedata.lookup( x.replace('\\N','').replace('{','').replace('}','') )
     for or_condition in FILTERING_CONDITIONS: #example: [ ['MiRedLocal', '\N{large red square}'],['MiTag'] ]
         if all(scape_telegram_chars(and_condition) in msg for and_condition in or_condition):
             #example:               ^^^ 'MiRedLocal'                           ^^^ ['MiRedLocal', '\N{large red square}']
                 return True
     return False
+
+def parse_filtering_conditions(str_filtering_conditions):
+    return [
+        OR_sentence.split(',') for OR_sentence in str_filtering_conditions.split(' | ')
+        #                 ^^^ AND sentences                                       ^^^ OR sentences
+        #example: [ ['MiRedLocal', '\N{large red square}'],['MiTag'] ]
+        #            (  S1      AND   S2  )               OR   S3
+    ]
 
 if __name__ == "__main__":
 
@@ -180,7 +198,7 @@ if __name__ == "__main__":
 
     print("initiating:", flush=True)
 
-    FILTERING_CONDITIONS     =     config.get(bot_header, 'FILTERING_CONDITIONS').split(',')
+    FILTERING_CONDITIONS     =     parse_filtering_conditions(config.get(bot_header, 'FILTERING_CONDITIONS'))
     LAST_N_EVENTS            = int(config.get(bot_header, 'LAST_N_EVENTS'))
     ON_CALL                  =     config.getboolean(bot_header, 'ON_CALL')
     SCHEDULE_DELAY_SECS      = int(config.get(bot_header, 'SCHEDULE_DELAY_SECS'))
