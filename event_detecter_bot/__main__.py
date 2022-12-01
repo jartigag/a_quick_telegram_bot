@@ -102,8 +102,8 @@ def update_events():
 
                 msg = format_as_event_message(event_with_extracted_fields)
                 if msg_meets_filtering_conditions(msg):
-                    print("[+]",event[event_id],"meets the filtering condition:", flush=True)
-                    print("   "+"\n   ".join(filtering_condition_code.split('\n')), flush=True)
+                    print("[+]",event[event['event_id']],"meets the filtering condition:", flush=True)
+                    print("   "+"\n   ".join(FILTERING_CONDITIONS.split('\n')), flush=True)
                     print(msg, flush=True)
                     if send_to_bot:
                         try:
@@ -116,8 +116,8 @@ def update_events():
                         except Exception:
                             continue
                 else:
-                    print("[-]",event[event_id],"doesn't meet the filtering condition:", flush=True)
-                    print("   "+"\n   ".join(filtering_condition_code.split('\n')), flush=True)
+                    print("[-]",event[event['event_id']],"doesn't meet the filtering condition:", flush=True)
+                    print("   "+"\n   ".join(FILTERING_CONDITIONS.split('\n')), flush=True)
 
                 unassigned_event = False
                 if 'status' in event_with_extracted_fields.keys():
@@ -127,7 +127,7 @@ def update_events():
                     if event_with_extracted_fields['state']=="open":
                         unassigned_event = True
                 if ON_CALL and unassigned_event:
-                    print(f"[+] ON_CALL={ON_CALL}, so",event[event_id],"will be re-sent until status!='new' (that is, until auto-assigned)", flush=True)
+                    print(f"[+] ON_CALL={ON_CALL}, so",event['event_id'],"will be re-sent until status!='new' (that is, until auto-assigned)", flush=True)
                 if ON_CALL and unassigned_event==False:
                     json.dump(event, sent_events_file)
                     sent_events_file.write('\n')
