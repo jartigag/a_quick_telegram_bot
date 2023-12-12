@@ -1,57 +1,60 @@
 from datetime import datetime, timedelta
-from .network_utils import query_ipgeolocation, extract_resources_from_http_body, identify_organization_network
+import json
+from .network_utils import identify_owner
 from pytz import timezone
 import re
 import subprocess
 import telebot
 from telebot.apihelper import ApiTelegramException
 
-def extract_fields(event):
-    return event
-
-def get_events(event_id):
-    return {
-        'body': {
-            'text': 'EVENT BODY', 'resources': [
-                {"created_timestamp": "2022-01-30T23:00:00.145906462Z", "event_id": "ldt:99999999999999999999999999999999", "external_ip": "130.206.159.235"}
-            ]
-        }
-    }
-
 def setup_telegram_bot(config_params):
     bot = telebot.TeleBot(config_params['TOKEN'])
 
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
-        telebot.types.InlineKeyboardButton(text='Refrescar', callback_data="cb_refresh"),
+        telebot.types.InlineKeyboardButton(text='Auto-asignar', callback_data="cb_auto_assign"),
     )
 
     @bot.callback_query_handler(func=lambda call: True)
     def callback_query(call):
 
-        #event_id = "ldt:"+call.message.json['entities'][-1]['url'].split('event/detail/')[-1].replace('/',':')
-        event_id = 000
+        if call.data == "cb_auto_assign":
 
-        if call.data == "cb_refresh":
-            print(f"[+] T2: {event_id} re-sent", flush=True)
-            bot.answer_callback_query(call.id, "Se ha enviado el evento de nuevo")
+            mail_uid  = int(call.message.json['text'].split('mail_uid     :')[-1].split('\N{globe with meridians}')[0].strip())
+            alert_id  = mail_uid
 
-        print(call.id)
+            usr = call.from_user
+            name = f"{usr.first_name} {usr.last_name} (tg_user_id={usr.id})"
 
-        last_event = extract_resources_from_http_body( get_events(event_id) )[-1]
-        event_with_extracted_fields = extract_fields(last_event)
+            try:
+                already_sent_mails = [ json.loads(line) for line in open(config_params['SENT_MAILS_FILENAME']).readlines() if line!="\n" ]
 
-        print(event_with_extracted_fields)
+                with open(config_params['SENT_MAILS_FILENAME'], 'w') as sent_mails_file:
+                    for mail in already_sent_mails:
+                        if mail['mail_uid']==mail_uid:
+                            mail['assigned'] = name
+                        json.dump(mail, sent_mails_file)
+                        sent_mails_file.write('\n')
 
-        bot.reply_to(
-            call.message,
-            format_as_event_message(event_with_extracted_fields),
-            parse_mode="MarkdownV2",
-            disable_web_page_preview=True,
-            disable_notification=True,
-            reply_markup=markup
-        )
-        print(f"{event_id} sent again")
+                bot.reply_to(
+                    call.message,
+                    scape_telegram_chars(
+                        f"Alerta {alert_id} auto-asignada a {name}\n" \
+                        + format_with_fixed_length_key({'mail_uid': mail_uid}, ['mail_uid'], scape_chars=False)
+                    ),
+                    parse_mode="MarkdownV2",
+                    disable_notification=True
+                )
+                print(f"Alert {alert_id} auto-assigned to {name}", flush=True)
+            except Exception as e:
+                print("[!]",e, flush=True)
+                bot.reply_to(
+                    call.message,
+                    scape_telegram_chars(f"[!] Error asignando la alerta {alert_id} a {name}\n"),
+                    parse_mode="MarkdownV2",
+                    disable_notification=True
+                )
+                print(f"[!] Error assigning alert {alert_id} to {name}", flush=True)
 
     def authentication_is_ok(message, command, admin=False):
         tg_user_id = message.from_user.id
@@ -81,10 +84,8 @@ def setup_telegram_bot(config_params):
         if authentication_is_ok(message, "/start = /help"):
             bot.reply_to(
                 message,
-                f"EventDetecterBot v{scape_telegram_chars(config_params['VERSION'])}: "+\
+                f"TLMail v{scape_telegram_chars(config_params['VERSION'])}: "+\
                 f"Bot de notificaciones por Telegram"+"\n\n"                                             +\
-                    "Comandos:\n"                                                                        +\
-                    "\- /whois` 192.168.1.24`\n identifica una dirección IP en las redes documentadas\n" +\
                     "Comandos de administrador:\n"                                                       +\
                     "\- /status\n   devuelve al admin info de estado del servicio\n"                     +\
                     "\- /restart\n   permite al admin reiniciar el servicio\n\n"                         +\
@@ -106,34 +107,12 @@ def setup_telegram_bot(config_params):
                 message,
                 scape_telegram_chars(
                     f"FILTERING_CONDITIONS={c['FILTERING_CONDITIONS']},SYSTEMCTL_SERVICE_NAME={c['SYSTEMCTL_SERVICE_NAME']}" +\
-                    f",SCHEDULE_DELAY_SECS={c['SCHEDULE_DELAY_SECS']}, LAST_N_EVENTS={c['LAST_N_EVENTS']}" +\
+                    f",SCHEDULE_DELAY_SECS={c['SCHEDULE_DELAY_SECS']}, ON_CALL={c['ON_CALL']}" +\
                     "\n\n"+systemctl_output
                 ),
                 parse_mode="MarkdownV2",
                 disable_notification=True
             )
-
-    @bot.message_handler(commands=['whois'])
-    def send_whois(message):
-        if authentication_is_ok(message, "/whois"):
-            input_ips = re.findall( r'[0-9]+(?:\.[0-9]+){3}', message.text )
-            for inputip_str in input_ips:
-                identified_network = identify_organization_network(inputip_str)
-                if identified_network:
-                    reply = inputip_str+" está en "+identified_network
-                else:
-                    reply = inputip_str+" no está en ninguna subred conocida"
-                bot.reply_to(
-                    message,
-                    reply,
-                    disable_notification=True
-                )
-            if not input_ips:
-                bot.reply_to(
-                    message,
-                    "Por favor, especifique al menos una dirección IP válida",
-                    disable_notification=True
-                )
 
     @bot.message_handler(commands=['about'])
     def send_about(message):
@@ -167,6 +146,7 @@ def send_telegram_message(bot, CHAT_ID, message_string, markup_buttons=False, se
         )
     except ApiTelegramException as e:
         print("[!] error - ApiTelegramException: "+e.description)
+        print("[!]                               "+message_string)
 
 def scape_telegram_chars(str_input):
     return str_input.replace('_', '\_').replace('*', '\*').replace('[', '\[').replace(']', '\]')\
@@ -176,17 +156,19 @@ def scape_telegram_chars(str_input):
                     .replace('.', '\.').replace('!', '\!').encode('utf-8','ignore').decode('utf-8') #.replace('`', '\`')\
 
 def format_time(input_datetime_str, include_date=False, return_in_utc=False):
+
+    if input_datetime_str=='-':
+        return '-'
+
     try:
-        input_datetime = datetime.fromisoformat(
-            input_datetime_str.replace('Z','').split('.')[0]+".000000+00:00"
-            #                           so a datetime object is obtained ^^
-            #                           with tzinfo=datetime.timezone.utc
-        )
+        input_datetime = datetime.fromisoformat(input_datetime_str)
     except ValueError:
         print("!! bad date string format:",input_datetime_str)
         return input_datetime_str
 
-    if not return_in_utc:
+    if return_in_utc:
+        input_datetime = input_datetime.astimezone(timezone('UTC'))
+    else:
         input_datetime = input_datetime.astimezone(timezone('Europe/Madrid'))
 
     if include_date:
@@ -199,55 +181,67 @@ def format_time(input_datetime_str, include_date=False, return_in_utc=False):
     else:
         return result
 
+def format_with_fixed_length_key(extractedfields_dict, dict_keylist, scape_chars=True):
+    return "\n".join(
+
+        scape_telegram_chars("`{:<13}".format(k))+"`: " + \
+        #          ^^ string minimal length
+        scape_telegram_chars(str(extractedfields_dict[k])) if scape_chars
+        else
+        "`{:<13}".format(k)+"`: " + \
+        str(extractedfields_dict[k]) for k in dict_keylist
+
+    )+"\n"
+
 def format_as_event_message(data_dict):
     def format_duration(input_duration):
         return str(timedelta(seconds=int(input_duration))).replace(':',"h",1).replace(':',"'",1)+'"'
 
-    def format_with_fixed_length_key(extractedfields_dict, dict_keylist):
-        return "\n".join(
-            scape_telegram_chars("`{:<17}".format(k))+"`: " + \
-            #          ^^ string minimal length
-            scape_telegram_chars(str(extractedfields_dict[k])) for k in dict_keylist
-        )+"\n"
-
     # symbols:
     color_mapping = {
-        'High': "\N{large red square}",   'Medium': "\N{large orange square}",
-        'Low': "\N{large orange square}", 'Informational': "\N{large blue square}"
+        'Alerta - exploit':                            "\N{large red square}",
+        'Alerta - programa malicioso':                 "\N{large red square}",
+        'Alerta - programa potencialmente no deseado': "\N{large orange square}",
+        'Low':                                         "\N{large orange square}",
+        'Informational':                               "\N{large blue square}",
+        'Unknown':                                     "\N{white large square}"
     }
     arrow = "\N{black rightwards arrow}"
 
     # shorter keys:
     d = { k.split(':')[-1].replace('seconds','time'): v for k,v in data_dict.items() }
 
-    #example: "15:17 PrettyGoodNewOffer 🟧 in Infojobs.com"
-    #network = scape_telegram_chars(identify_network(d['local_ip']))
-    #if network!="otra red":
-    #    network = "*"+network+"*"
-    msg = f"{ format_time(d['created_timestamp']) } "          + \
-          f"{ scape_telegram_chars('PrettyGoodNewOffer') } "        + \
-          f"{ color_mapping['Medium'] } "
+    partial_match_subject = {d['subject']: (k,v) for k,v in color_mapping.items() if k in d['subject']}
 
-    #example: "[[+]](https://ipgeolocation.io/ip-location/130.206.159.235)` external_ip   :` 130.206.159.235 (Pamplona, Red.es)
-    geodata = query_ipgeolocation(d['external_ip'])
-    msg += "\n"
-    msg += f"[\( \+ \)](https://ipgeolocation.io/ip-location/{ d['external_ip'] })` external\_ip  `: "  + \
-           f"`{ scape_telegram_chars(d['external_ip']) }` "                                             + \
-           f"\({ scape_telegram_chars(geodata[0]) }, { scape_telegram_chars(geodata[1]) }\)"
-
-    #msg += "\n"
-    #msg += format_with_fixed_length_key(
-    #    d, ['site_name', 'machine_domain']
-    #)
-
-    #msg += "\n"
-    #for time_key in ['created_timestamp', 'date_updated']:
-    #    d[time_key] = format_time(d[time_key], include_date=True)
-    #msg += format_with_fixed_length_key(
-    #    d, ['created_timestamp', 'date_updated']
-    #)
+    #example: "13:59 HackTool/NetPass en N-2-0056"
+    msg = f"{ format_time(d['date_received']) } "                                                + \
+          f"{ scape_telegram_chars(d['name']) } "                                                + \
+          f"{ partial_match_subject.get(d['subject'], [None,color_mapping['Unknown']])[1] } en " + \
+          f"{ scape_telegram_chars(d['host']) }"
 
     msg += "\n"
-    msg += "       \N{globe with meridians}"+f" [Open in the website](https://google.es)"+" \N{globe with meridians}"
+    msg += f"{ scape_telegram_chars(partial_match_subject.get(d['subject'], [d['subject']])[0]) }"
+    msg += "\n"
+
+    msg += "\n"
+    d['date_received'] = format_time(d['date_received'], include_date=True, return_in_utc=True)
+    d['group'] = d['group'].replace('\\','/') # because they're like: Todos\B\N
+    d['path']  = d['path'].replace('\\','/')  # because they're like: DESKTOPDIRECTORY|\Nirlauncher\NirSoft\mailpv.exe
+    if identify_owner(d['host']):
+        d['owner'] = identify_owner(d['host'])
+    else:
+        d['owner'] = "Sin documentar"
+    #msg += format_with_fixed_length_key(d, ['name', 'host'])
+    msg += format_with_fixed_length_key(d, ['owner', 'group'])
+    msg += format_with_fixed_length_key(d, ['path', 'hash_md5'])
+    msg += "\n"
+    msg += format_with_fixed_length_key(d, ['date_received', 'mail_uid'])
+
+    msg += "\n"
+    msg += "            \N{globe with meridians}"+f" [Buscar en Cytomic]({d['url_cytomic']})"+" \N{globe with meridians}"
+    msg += "\n"
+    msg += "      \N{globe with meridians}"+f" [Buscar en Hybrid Analysis]({d['url_hybrid_analysis']})"+" \N{globe with meridians}"
+    msg += "\n"
+    msg += "          \N{globe with meridians}"+f" [Buscar en Virus Total]({d['url_virus_total']})"+" \N{globe with meridians}"
 
     return msg
