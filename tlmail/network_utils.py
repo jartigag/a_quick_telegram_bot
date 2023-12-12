@@ -1,6 +1,6 @@
 #usage:
-#$ python telemail/network_utils.py
-#$ python telemail/network_utils.py 192.168.1.10
+#$ python tlmail/network_utils.py
+#$ python tlmail/network_utils.py 192.168.1.10
 
 import requests
 import ipaddress
@@ -16,7 +16,7 @@ def query_ipgeolocation(external_ip):
     return ipgeoloc_data['city'],ipgeoloc_data['isp']
 
 hostnames_dicts_list = []
-csv_files = [f for f in Path('telemail/hostnames_lists').iterdir() if f.suffix=='.csv']
+csv_files = [f for f in Path('tlmail/hostnames_lists').iterdir() if f.suffix=='.csv']
 for csv_file in csv_files:
     with open(csv_file) as f:
         reader = csv.reader(f, delimiter=",")
