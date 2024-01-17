@@ -25,11 +25,13 @@
 #
 # $ sudo systemctl daemon-reload
 
-__author__  = "@jartigag"
-__version__ = '1.4'
-__date__    = '2023-05-22'
+__author__  = ["@jartigag", "@cataand"]
+__version__ = '1.5'
+__date__    = '2023-12-15'
 
 __changelog__ = """
+v1.5:
+      - better html handling
 v1.4:
       - refactor (extract_body_from_email_message, try_parsing_date, extract_fields)
 v1.3:
@@ -100,13 +102,16 @@ def try_parsing_date(text):
     raise ValueError('no valid date format found')
 
 def extract_body_from_email_message(email_message, remove_html_tags=False):
-    body = ''
-
+    body = ""
     if email_message.is_multipart():
         parts_list = [x for x in email_message.iter_parts()]
         body = "".join([p.get_content() for p in parts_list])
     else:
-        body = email_message.get_body(('plain',)).get_content()
+        body = email_message.get_body().get_content()
+
+    if email_message.get_content_type() == "text/html":
+        remove_html_tags = True
+
     if remove_html_tags:
         html_tag_re = re.compile(r'(<!--.*?-->|<[^>]*>)') # https://stackoverflow.com/a/19730306
         body        = html_tag_re.sub('', body)
@@ -156,7 +161,7 @@ def query_mails(mail_object, already_assigned_uids):
             date = dt.datetime.utcnow().replace(microsecond=0).isoformat() + '+00:00'
             #example:                                                              '2022-07-06T10:00:00+00:00'
 
-        content = extract_body_from_email_message(email_message, remove_html_tags=True)
+        content = extract_body_from_email_message(email_message)
 
         subject = email_message['subject']
         # if subject is composed by encoded-words,

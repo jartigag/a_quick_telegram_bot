@@ -120,7 +120,8 @@ def setup_telegram_bot(config_params):
             bot.reply_to(
                 message,
                 scape_telegram_chars(
-                    f"Telefalcon v{config_params['VERSION']} ({config_params['DATE']}, {config_params['AUTHOR']})\n"+\
+                    f"Telefalcon v{config_params['VERSION']} ({config_params['DATE']},"+\
+                    f"{', '.join(config_params['AUTHOR']) if type(config_params['AUTHOR'])==list else config_params['AUTHOR']})\n"+\
                     config_params['CHANGELOG']
                 ),
                 parse_mode="MarkdownV2",
