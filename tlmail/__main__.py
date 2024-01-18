@@ -10,7 +10,7 @@
 # # IMPORTANT! Adapt your environment variables ($USER, WorkingDirectory)
 # $ cat /etc/systemd/system/tlmail.service
 # [Unit]
-# Description=Telegram bot for (on-call) notification of Cytomic alerts, received by mail
+# Description=Telegram bot for on-call notification of open offenses in QRadar, received via the QRadar API
 #
 # [Service]
 # #User=$USER                            # by default, root
@@ -26,10 +26,12 @@
 # $ sudo systemctl daemon-reload
 
 __author__  = ["@jartigag", "@cataand"]
-__version__ = '1.5'
-__date__    = '2023-12-15'
+__version__ = '1.6'
+__date__    = '2024-01-17'
 
 __changelog__ = """
+v1.6
+      - Add support for QRadar API as a source.
 v1.5:
       - better html handling
 v1.4:
@@ -47,48 +49,18 @@ v0.9:
       - Forked from event_detecter_bot and adapted to get events from an email inbox.
 """
 
-import base64
 import configparser
 import datetime as dt
-import email
-import email.header
-from email.policy import default as default_policy
-import imaplib
 import locale
-import json
 import re
 import schedule
-from socket import error as SocketError
 import threading
-from .telegram_utils import setup_telegram_bot, send_telegram_message, format_as_event_message, scape_telegram_chars
+from .telegram_utils import setup_telegram_bot, send_telegram_message, format_as_event_message, scape_telegram_chars, get_cache, set_cache
+from .qradar import QRadarAPI
 import time
 import unicodedata
-
-def connect_to_server_and_select_email_inbox(server, email, password):
-    print("connecting to mail server:", flush=True)
-    mail_object = None
-
-    mail_object = imaplib.IMAP4_SSL(server)
-
-    status_code, status_msg = 'unknown status code', 'unknown status msg'
-    print(f"EMAIL={EMAIL}", flush=True)
-    status_code, status_msg = mail_object.login(email, password)
-    status_code, status_msg = mail_object.select('inbox')
-
-    return mail_object
-
-def archive_emails(uids_list, keep_n_emails_in_inbox, archive_folder_name):
-    archived_uids = []
-
-    for uid in uids_list[:-keep_n_emails_in_inbox]:
-        apply_lbl_msg = mail_object.uid('COPY', uid, archive_folder_name)
-        if apply_lbl_msg[0] == 'OK':
-            mov, data = mail_object.uid('STORE', uid , '+FLAGS', '(\Deleted)')
-            mail_object.expunge()
-            archived_uids.append(uid)
-    print(f"archived_uids={archived_uids}", flush=True)
-
-    return list( set(uids_list) - set(archived_uids) )
+import html
+import telebot
 
 def try_parsing_date(text):
     for fmt in (
@@ -115,96 +87,43 @@ def extract_body_from_email_message(email_message, remove_html_tags=False):
     if remove_html_tags:
         html_tag_re = re.compile(r'(<!--.*?-->|<[^>]*>)') # https://stackoverflow.com/a/19730306
         body        = html_tag_re.sub('', body)
+        body = html.unescape(body)
 
-    return body
+    return body.strip()
 
 def extract_fields(content):
-
     result = {}
 
-    result['host']                = content.split('Equipo:')[-1].split('Grupo:')[0].strip()
-    result['group']               = content.split('Grupo:')[-1].split('Nombre:')[0].strip()
-    result['name']                = content.split('Nombre:')[-1].split('Ruta:')[0].strip() if 'Nombre:' in content else 'N.A.'
-    result['path']                = content.split('Ruta:')[-1].split('Hash:')[0].strip()
-    result['hash_md5']            = content.split('Hash:')[-1].split('Equipo origen de la infección:')[0].strip()
-    result['url_hybrid_analysis'] = "https://www.hybrid-analysis.com/search?query="+hash_md5
-    result['url_virus_total']     = "https://www.virustotal.com/gui/search/"+hash_md5
-    result['url_cytomic']         = "https://manage.cytomicmodel.com/#/devices/criteria/none?query="+host
+    result['url']       = content.split('URL: ')[-1].lstrip('<').rstrip(' >')
+    result['ticket_id'] = result['url'].split('?id=')[-1].split()[0]
 
     return result
 
-def query_mails(mail_object, already_assigned_uids):
-    if not mail_object:
-        return {}
-
-    status1, data_uids = mail_object.uid("search", None, "ALL")
-    print(f"{status1}. uids={data_uids}", flush=True)
-
-    data_uids_list = data_uids[0].split()
-    if KEEP_N_EMAILS_IN_INBOX!=0 and len(data_uids_list)>KEEP_N_EMAILS_IN_INBOX:
-        data_uids_list = archive_emails(data_uids_list, KEEP_N_EMAILS_IN_INBOX, ARCHIVE_FOLDER_NAME)
-
-    mail_uids = [x for x in data_uids_list if int(x) not in already_assigned_uids]
-    mail_dicts = []
-    locale.setlocale(locale.LC_ALL, 'en_US.utf8')
-
-    for mail_uid in mail_uids:
-        status2, data_mail = mail_object.uid("fetch", mail_uid, "(RFC822)")
-
-        email_blob    = data_mail[0][1]
-        email_message = email.message_from_bytes(email_blob, policy=default_policy)
-
-        try:
-            date = try_parsing_date(email_message['date'])
-        except Exception as e:
-            print("[!]", e, flush=True)
-            date = dt.datetime.utcnow().replace(microsecond=0).isoformat() + '+00:00'
-            #example:                                                              '2022-07-06T10:00:00+00:00'
-
-        content = extract_body_from_email_message(email_message)
-
-        subject = email_message['subject']
-        # if subject is composed by encoded-words,
-        # ( example: =?UTF-8?B?W0ROUy1GVyAjODkzOTY0XSBBcHJvYmFjacOzbiBhbHRhIFVQVi9FVUggZW4g?= =?UTF-8?B?c2VydmljaW8gRE5TIEZpcmV3YWxs?= ),
-        # apply this decodification: https://stackoverflow.com/a/12904228
-        if '?utf-8?' in subject.lower() or '?iso-8859-1?' in subject.lower():
-            subject = ""
-            for subject_bytes,subject_encoding in email.header.decode_header(email_message['subject']):
-            #example: email.header.decode_header(mail_message['subject']) = [(b'Se ', None), (b'agreg\xf3 la informaci\xf3n', 'iso-8859-1'), (b' de seguridad de la cuenta Microsoft', None)]
-                subject += subject_bytes.decode(subject_encoding) if subject_encoding!=None else subject_bytes.decode('utf-8')
-
-        mail_dicts.append(
-            extract_fields(content) | {
-                                        'mail_uid': int(mail_uid),
-                                        'subject': subject,
-                                        'date_received': date,
-                                        'assigned': '-'
-                                      }
-            )
-
-    locale.setlocale(locale.LC_ALL, 'es_ES.utf8')
-
-    return mail_dicts
-
 def update_events():
-    already_sent_mails = [ json.loads(line) for line in open(SENT_MAILS_FILENAME).readlines() if line!="\n" ]
-    already_assigned_uids = [ int(x['mail_uid']) for x in already_sent_mails if x['assigned']!='-' ]
+    cache = get_cache()
 
-    if connect_to_email_server:
-        print(f"[+] T1: query_mails()", flush=True)
-        last_unassigned_mails = query_mails(mail_object, already_assigned_uids)
-    else:
-        last_unassigned_mails = {}
-    print(f"[+] T1: len(last_unassigned_mails):", len(last_unassigned_mails), flush=True)
+    # Get new offenses
+    new_offenses = list(reversed(qradar.get_offenses(f"id>{cache['last_offense_id']} and start_time>{start_epoch}")))
+    for offense in new_offenses:
+        offense["assigned"] = "-"
 
-    for mail in last_unassigned_mails:
+    # Get previous offenses
+    previous_offenses = cache["previous_offenses"]
+    previous_unassigned_offenses = filter(lambda o: o["assigned"] == "-", previous_offenses)
 
-        print("new:",          mail['mail_uid'], "-", mail['subject'], flush=True)
-        msg = format_as_event_message(mail)
+    offenses = list(previous_unassigned_offenses) + list(new_offenses)
+    for offense in offenses:
+        print("", offense['id'], "-", offense['description'], flush=True)
+        msg = format_as_event_message(offense)
         if msg_meets_filtering_conditions(msg, FILTERING_CONDITIONS):
-            print("[+]",mail['mail_uid'],"meets the filtering condition:", flush=True)
+            print("[+]",offense['id'],"meets the filtering condition:", flush=True)
             print("   ",FILTERING_CONDITIONS, flush=True)
+
             if send_to_bot:
+                markup = telebot.types.InlineKeyboardMarkup()
+                markup.add(
+                    telebot.types.InlineKeyboardButton(text='Auto-asignar', callback_data=f'{{"cb":"cb_auto_assign","oid":{offense["id"]}}}'),
+                )
                 try:
                     send_telegram_message(
                         bot,
@@ -215,24 +134,22 @@ def update_events():
                 except Exception as e:
                     print("[!]", e, flush=True)
                     continue
-        else:
-            print("[-]",mail['mail_uid'],"doesn't meet the filtering condition:", flush=True)
-            print("   ",FILTERING_CONDITIONS, flush=True)
 
         if ON_CALL:
             if not is_time_between(dt.time(WAVING_HOURS[0],0), dt.time(WAVING_HOURS[1],0)):
                 print(f"[+] ON_CALL={ON_CALL}, so",
-                    mail['mail_uid'],
+                    offense['id'],
                     "will be re-sent until assigned!='-' (that is, until auto-assigned)", flush=True
                     )
             else:
-                mail['assigned'] = 'N/A'
+                offense['assigned'] = 'N/A'
         if not ON_CALL:
-            mail['assigned'] = 'N/A'
+            offense['assigned'] = 'N/A'
 
-        with open(SENT_MAILS_FILENAME, 'a') as sent_mails_file:
-            json.dump(mail, sent_mails_file)
-            sent_mails_file.write('\n')
+    set_cache({
+        "last_offense_id": new_offenses[-1]["id"] if new_offenses else cache['last_offense_id'],
+        "previous_offenses": previous_offenses + new_offenses
+    })
 
 def is_time_between(begin_time, end_time, check_time=None): # https://stackoverflow.com/a/10048290
     # If check time is not given, default to current UTC time
@@ -275,12 +192,14 @@ if __name__ == "__main__":
     config = configparser.ConfigParser()
     config.read('config_tlmail.ini')
 
-    bot_header  = "Tlmail"
-    mail_header = "Mail Server"
+    bot_header  = "Telemail"
+    qradar_header = "QRadar"
     tg_header   = "Telegram API Token"
 
+    start_epoch = round(time.time() * 1000)
+
     # feature flags (for debugging):
-    connect_to_email_server = True
+    connect_to_qradar = True
     send_to_bot = True
 
     print("initiating:", flush=True)
@@ -289,30 +208,27 @@ if __name__ == "__main__":
     ON_CALL                  =     config.getboolean(bot_header, 'ON_CALL')
     SCHEDULE_DELAY_SECS      = int(config.get(bot_header, 'SCHEDULE_DELAY_SECS'))
     WAVING_HOURS             = [int(x) for x in config.get(bot_header, 'WAVING_HOURS', fallback="7").split(',')]
-    SENT_MAILS_FILENAME      =     config.get(bot_header, 'SENT_MAILS_FILE')
+    #SENT_MAILS_FILENAME      =     config.get(bot_header, 'SENT_MAILS_FILE')
     SYSTEMCTL_SERVICE_NAME   =     config.get(bot_header, 'SYSTEMCTL_SERVICE_NAME')
-    open(SENT_MAILS_FILENAME,'a+').close() # touch file (create the file if it doesn't exist, leave it if it exists)
+    #open(SENT_MAILS_FILENAME,'a+').close() # touch file (create the file if it doesn't exist, leave it if it exists)
 
     print(f"FILTERING_CONDITIONS={FILTERING_CONDITIONS}, ON_CALL={ON_CALL}, SYSTEMCTL_SERVICE_NAME={SYSTEMCTL_SERVICE_NAME}", flush=True)
     print(f"SCHEDULE_DELAY_SECS={SCHEDULE_DELAY_SECS}", flush=True)
 
+    if connect_to_qradar:
+        QRADAR_URL = config.get(qradar_header, 'BASE_URL')
+        QRADAR_TOKEN = config.get(qradar_header, 'TOKEN')
+        QRADAR_VERSION = config.get(qradar_header, 'VERSION')
 
-    if connect_to_email_server:
-        SERVER                 = config.get(mail_header, 'SERVER')
-        EMAIL                  = config.get(mail_header, 'EMAIL')
-        PASSWORD               = config.get(mail_header, 'PASSWORD')
-        KEEP_N_EMAILS_IN_INBOX = int(config.get(mail_header, 'KEEP_N_EMAILS_IN_INBOX'))
-        ARCHIVE_FOLDER_NAME    = config.get(mail_header, 'ARCHIVE_FOLDER_NAME')
-
-        mail_object = connect_to_server_and_select_email_inbox(SERVER, EMAIL, PASSWORD)
+        qradar = QRadarAPI(QRADAR_URL, QRADAR_TOKEN, QRADAR_VERSION)
 
     if send_to_bot:
         TOKEN                  = config.get(tg_header,   'TOKEN')
         CHAT_ID                = config.get(tg_header,   'CHAT_ID')
         telegram_config_params = {'TOKEN': TOKEN, 'FILTERING_CONDITIONS': FILTERING_CONDITIONS, 'ON_CALL': ON_CALL}
 
-        process_params = {'VERSION': __version__, 'DATE': __date__, 'CHANGELOG': __changelog__, 'AUTHOR': __author__, 'EMAIL': EMAIL,
-            'SYSTEMCTL_SERVICE_NAME': SYSTEMCTL_SERVICE_NAME, 'SCHEDULE_DELAY_SECS': SCHEDULE_DELAY_SECS, 'SENT_MAILS_FILENAME': SENT_MAILS_FILENAME}
+        process_params = {'VERSION': __version__, 'DATE': __date__, 'CHANGELOG': __changelog__, 'AUTHOR': __author__,
+            'SYSTEMCTL_SERVICE_NAME': SYSTEMCTL_SERVICE_NAME, 'SCHEDULE_DELAY_SECS': SCHEDULE_DELAY_SECS}#, 'SENT_MAILS_FILENAME': SENT_MAILS_FILENAME}
         x = config.get(tg_header, 'TG_USER_IDS', fallback=None)
         y = config.get(tg_header, 'TG_ADMIN_IDS', fallback=None)
         TG_USER_IDS  = [int(n) for n in x.split(',')] if x else ''
@@ -321,7 +237,7 @@ if __name__ == "__main__":
         if TG_USER_IDS or TG_ADMIN_IDS:
             print(f"TG_USER_IDS={TG_USER_IDS}, TG_ADMIN_IDS={TG_ADMIN_IDS}", flush=True)
 
-        bot, markup = setup_telegram_bot(telegram_config_params|process_params|telegram_ids)
+        bot = setup_telegram_bot(telegram_config_params|process_params|telegram_ids)
         print("[+] Telegram Bot is ready.", flush=True)
 
 

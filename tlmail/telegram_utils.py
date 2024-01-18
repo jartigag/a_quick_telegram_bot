@@ -1,60 +1,69 @@
 from datetime import datetime, timedelta
 import json
-from .network_utils import identify_owner
 from pytz import timezone
-import re
+import os
+import pickle
 import subprocess
 import telebot
 from telebot.apihelper import ApiTelegramException
 
+def get_cache():
+    if os.path.isfile("cache.pkl"):
+        with open("cache.pkl", 'rb') as f:
+            return pickle.load(f)
+    else:
+        return {
+            "last_offense_id": 2051,
+            "previous_offenses": []
+        }
+
+def set_cache(data):
+    with open("cache.pkl", 'wb') as f:
+        pickle.dump(data, f)
+
 def setup_telegram_bot(config_params):
     bot = telebot.TeleBot(config_params['TOKEN'])
 
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(
-        telebot.types.InlineKeyboardButton(text='Auto-asignar', callback_data="cb_auto_assign"),
-    )
-
     @bot.callback_query_handler(func=lambda call: True)
     def callback_query(call):
+        data = json.loads(call.data)
+        callback = data["cb"]
 
-        if call.data == "cb_auto_assign":
-
-            mail_uid  = int(call.message.json['text'].split('mail_uid     :')[-1].split('\N{globe with meridians}')[0].strip())
-            alert_id  = mail_uid
+        if callback == "cb_auto_assign":
+            offense_id = data["oid"]
 
             usr = call.from_user
             name = f"{usr.first_name} {usr.last_name} (tg_user_id={usr.id})"
 
             try:
-                already_sent_mails = [ json.loads(line) for line in open(config_params['SENT_MAILS_FILENAME']).readlines() if line!="\n" ]
+                cache = get_cache()
+                previous_offenses = cache["previous_offenses"]
 
-                with open(config_params['SENT_MAILS_FILENAME'], 'w') as sent_mails_file:
-                    for mail in already_sent_mails:
-                        if mail['mail_uid']==mail_uid:
-                            mail['assigned'] = name
-                        json.dump(mail, sent_mails_file)
-                        sent_mails_file.write('\n')
+                for offense in previous_offenses:
+                    if offense['id']==offense_id:
+                        offense['assigned'] = name
+                        break
+
+                set_cache(cache)
 
                 bot.reply_to(
                     call.message,
                     scape_telegram_chars(
-                        f"Alerta {alert_id} auto-asignada a {name}\n" \
-                        + format_with_fixed_length_key({'mail_uid': mail_uid}, ['mail_uid'], scape_chars=False)
+                        f"Ofensa {offense_id} auto-asignada a {name}\n"
                     ),
                     parse_mode="MarkdownV2",
                     disable_notification=True
                 )
-                print(f"Alert {alert_id} auto-assigned to {name}", flush=True)
+                print(f"Offense {offense_id} auto-assigned to {name}", flush=True)
             except Exception as e:
                 print("[!]",e, flush=True)
                 bot.reply_to(
                     call.message,
-                    scape_telegram_chars(f"[!] Error asignando la alerta {alert_id} a {name}\n"),
+                    scape_telegram_chars(f"[!] Error asignando la ofensa {offense_id} a {name}\n"),
                     parse_mode="MarkdownV2",
                     disable_notification=True
                 )
-                print(f"[!] Error assigning alert {alert_id} to {name}", flush=True)
+                print(f"[!] Error assigning offense {offense_id} to {name}", flush=True)
 
     def authentication_is_ok(message, command, admin=False):
         tg_user_id = message.from_user.id
@@ -84,7 +93,7 @@ def setup_telegram_bot(config_params):
         if authentication_is_ok(message, "/start = /help"):
             bot.reply_to(
                 message,
-                f"TLMail v{scape_telegram_chars(config_params['VERSION'])}: "+\
+                f"TeleMail v{scape_telegram_chars(config_params['VERSION'])}: "+\
                 f"Bot de notificaciones por Telegram"+"\n\n"                                             +\
                     "Comandos de administrador:\n"                                                       +\
                     "\- /status\n   devuelve al admin info de estado del servicio\n"                     +\
@@ -120,7 +129,7 @@ def setup_telegram_bot(config_params):
             bot.reply_to(
                 message,
                 scape_telegram_chars(
-                    f"Telefalcon v{config_params['VERSION']} ({config_params['DATE']},"+\
+                    f"Telefalcon v{config_params['VERSION']} ({config_params['DATE']}, "+\
                     f"{', '.join(config_params['AUTHOR']) if type(config_params['AUTHOR'])==list else config_params['AUTHOR']})\n"+\
                     config_params['CHANGELOG']
                 ),
@@ -133,7 +142,7 @@ def setup_telegram_bot(config_params):
         if authentication_is_ok(message, "/restart", admin=True):
             subprocess.check_output("systemctl restart "+config_params['SYSTEMCTL_SERVICE_NAME'], shell=True, text=True)
 
-    return bot, markup
+    return bot
 
 def send_telegram_message(bot, CHAT_ID, message_string, markup_buttons=False, send_without_sound=False):
     try:
@@ -147,7 +156,6 @@ def send_telegram_message(bot, CHAT_ID, message_string, markup_buttons=False, se
         )
     except ApiTelegramException as e:
         print("[!] error - ApiTelegramException: "+e.description)
-        print("[!]                               "+message_string)
 
 def scape_telegram_chars(str_input):
     return str_input.replace('_', '\_').replace('*', '\*').replace('[', '\[').replace(']', '\]')\
@@ -195,54 +203,20 @@ def format_with_fixed_length_key(extractedfields_dict, dict_keylist, scape_chars
     )+"\n"
 
 def format_as_event_message(data_dict):
-    def format_duration(input_duration):
-        return str(timedelta(seconds=int(input_duration))).replace(':',"h",1).replace(':',"'",1)+'"'
+    def timestamp_to_str(ts):
+        ts = ts / 1000.0
+        return datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M:%S")
 
-    # symbols:
-    color_mapping = {
-        'Alerta - exploit':                            "\N{large red square}",
-        'Alerta - programa malicioso':                 "\N{large red square}",
-        'Alerta - programa potencialmente no deseado': "\N{large orange square}",
-        'Low':                                         "\N{large orange square}",
-        'Informational':                               "\N{large blue square}",
-        'Unknown':                                     "\N{white large square}"
-    }
-    arrow = "\N{black rightwards arrow}"
-
-    # shorter keys:
-    d = { k.split(':')[-1].replace('seconds','time'): v for k,v in data_dict.items() }
-
-    partial_match_subject = {d['subject']: (k,v) for k,v in color_mapping.items() if k in d['subject']}
-
-    #example: "13:59 HackTool/NetPass en N-2-0056"
-    msg = f"{ format_time(d['date_received']) } "                                                + \
-          f"{ scape_telegram_chars(d['name']) } "                                                + \
-          f"{ partial_match_subject.get(d['subject'], [None,color_mapping['Unknown']])[1] } en " + \
-          f"{ scape_telegram_chars(d['host']) }"
-
-    msg += "\n"
-    msg += f"{ scape_telegram_chars(partial_match_subject.get(d['subject'], [d['subject']])[0]) }"
-    msg += "\n"
-
-    msg += "\n"
-    d['date_received'] = format_time(d['date_received'], include_date=True, return_in_utc=True)
-    d['group'] = d['group'].replace('\\','/') # because they're like: Todos\B\N
-    d['path']  = d['path'].replace('\\','/')  # because they're like: DESKTOPDIRECTORY|\Nirlauncher\NirSoft\mailpv.exe
-    if identify_owner(d['host']):
-        d['owner'] = identify_owner(d['host'])
-    else:
-        d['owner'] = "Sin documentar"
-    #msg += format_with_fixed_length_key(d, ['name', 'host'])
-    msg += format_with_fixed_length_key(d, ['owner', 'group'])
-    msg += format_with_fixed_length_key(d, ['path', 'hash_md5'])
-    msg += "\n"
-    msg += format_with_fixed_length_key(d, ['date_received', 'mail_uid'])
-
-    msg += "\n"
-    msg += "            \N{globe with meridians}"+f" [Buscar en Cytomic]({d['url_cytomic']})"+" \N{globe with meridians}"
-    msg += "\n"
-    msg += "      \N{globe with meridians}"+f" [Buscar en Hybrid Analysis]({d['url_hybrid_analysis']})"+" \N{globe with meridians}"
-    msg += "\n"
-    msg += "          \N{globe with meridians}"+f" [Buscar en Virus Total]({d['url_virus_total']})"+" \N{globe with meridians}"
+    msg = f"""
+*Nueva ofensa a revisar en QRadar*
+*ID*: {scape_telegram_chars(str(data_dict["id"]))}
+*Desc*: {scape_telegram_chars(data_dict["description"])}
+*Red origen*: {scape_telegram_chars(data_dict["source_network"])}
+*IP origen*: {scape_telegram_chars(data_dict["offense_source"])}
+{scape_telegram_chars("=====================")}
+*Día y Hora*: {scape_telegram_chars(timestamp_to_str(data_dict["start_time"]))}
+*Magnitud*: {scape_telegram_chars(str(data_dict["magnitude"]))}
+*Severidad*: {scape_telegram_chars(str(data_dict["severity"]))}
+    """
 
     return msg

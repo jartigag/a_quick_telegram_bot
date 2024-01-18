@@ -1,6 +1,6 @@
 # Tlmail
 
-Bot de Telegram para notificación en modo guardia de alertas recibidas por email.
+Bot de Telegram para notificación en modo guardia de ofensas abiertas en QRadar, recibidas por API.
 
 ## Instalar y configurar
 
@@ -17,7 +17,7 @@ python -m pipenv install
 3. Hacer una copia de [config_tlmail.template.ini](config_tlmail.template.ini) y sustituir en ella
 cada parámetro por su valor correspondiente, siguiendo las instrucciones de los comentarios.
 Al menos deben configurarse los siguientes parámetros:
-de la sección `[Mail Server]`, SERVER, EMAIL y PASSWORD;
+de la sección `[QRadar]`, BASE_URL, TOKEN y VERSION;
 y de la sección `[Telegram API Token]`, TOKEN y CHAT_ID.
 ```
 cp config_tlmail.template.ini config_tlmail.ini
@@ -40,11 +40,11 @@ python -m tlmail
 Ejecutar los siguientes pasos como usuario root:
 
 1. En la ruta `/etc/systemd/system/tlmail_customershortname.service` (reemplazar "customershortname" por el nombre correspondiente
-tanto aquí como en el parámetro SYSTEMCTL_SERVICE_NAME de [config_tlmail.ini](config_tlmail.template.ini#L5)),
+tanto aquí como en el parámetro SYSTEMCTL_SERVICE_NAME de [config_tlmail.ini](config_tlmail.template.ini#L6)),
 definir el servicio "tlmail_customershortname" con un fichero como este:
 ```
 [Unit]
-Description=Telegram bot for (on-call) notification of alerts received by mail
+Description=Telegram bot for on-call notification of open tickets in QRadar, received via the QRadar API
 
 [Service]
 User=root

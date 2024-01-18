@@ -1,8 +1,9 @@
 # Configuration parameters
-config_event_detecter.ini
+config_tlmail.ini
 
 # Data
 sent_events.ndjson
+cache.pkl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
